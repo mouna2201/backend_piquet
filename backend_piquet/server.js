@@ -1,7 +1,16 @@
 require('dotenv').config();
 const mqtt = require('mqtt');
 const mongoose = require('mongoose');
+const express = require('express');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
+const cors = require('cors');
 const Capteur = require('./models/Capteur');
+const User = require('./models/User');
+
+// Secret JWT (à mettre dans .env)
+const JWT_SECRET = process.env.JWT_SECRET || 'votre_secret_super_securise_changez_moi';
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
 
 // Connexion MongoDB avec meilleure gestion d'erreurs
 const connectDB = async () => {
@@ -20,7 +29,304 @@ const connectDB = async () => {
 
 connectDB();
 
-// Configuration MQTT
+// Initialisation de l'application Express
+const app = express();
+
+// Configuration CORS pour Flutter
+app.use(cors({
+  origin: '*', // En production, remplacez par votre domaine Flutter
+  methods: ['GET', 'POST', 'PUT', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
+
+app.use(express.json());
+
+// ==================== MIDDLEWARE D'AUTHENTIFICATION ====================
+const authenticateToken = (req, res, next) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1]; // Format: "Bearer TOKEN"
+
+  if (!token) {
+    return res.status(401).json({ message: 'Token manquant. Accès refusé.' });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, decoded) => {
+    if (err) {
+      return res.status(403).json({ 
+        message: 'Token invalide ou expiré',
+        error: err.message 
+      });
+    }
+    
+    req.user = decoded;
+    next();
+  });
+};
+
+// ==================== ROUTES D'AUTHENTIFICATION ====================
+
+// 1. INSCRIPTION (Register)
+app.post('/api/users/register', async (req, res) => {
+  try {
+    const { name, email, password, role } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Email et password sont requis' });
+    }
+
+    // Vérifier si l'utilisateur existe déjà
+    const existingUser = await User.findOne({ 
+      email
+    });
+
+    if (existingUser) {
+      return res.status(400).json({ 
+        message: 'Email déjà utilisé' 
+      });
+    }
+
+    // Hasher le mot de passe
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Créer l'utilisateur
+    const newUser = new User({
+      name,
+      email,
+      password: hashedPassword,
+      role
+    });
+
+    await newUser.save();
+
+    // Générer le token JWT
+    const token = jwt.sign(
+      { 
+        userId: newUser._id, 
+        email: newUser.email,
+        role: newUser.role
+      },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+
+    console.log(`✅ Nouvel utilisateur inscrit: ${newUser.name}`);
+
+    return res.status(201).json({
+      message: 'Inscription réussie',
+      token,
+      user: {
+        id: newUser._id,
+        email: newUser.email,
+        name: newUser.name,
+        role: newUser.role
+      }
+    });
+  } catch (error) {
+    console.error('❌ Erreur inscription:', error.message);
+    return res.status(500).json({ 
+      message: 'Erreur du serveur',
+      error: error.message 
+    });
+  }
+});
+
+// 2. CONNEXION (Login) - VERSION SÉCURISÉE (email + password)
+app.post('/api/users/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ message: 'Email et password sont requis' });
+    }
+
+    // Trouver l'utilisateur par email
+    const user = await User.findOne({ email });
+
+    if (!user) {
+      return res.status(401).json({ message: 'Identifiants invalides' });
+    }
+
+    // Vérifier le mot de passe hashé
+    const isPasswordValid = await bcrypt.compare(password, user.password);
+
+    if (!isPasswordValid) {
+      return res.status(401).json({ message: 'Identifiants invalides' });
+    }
+
+    // Générer le token JWT
+    const token = jwt.sign(
+      { 
+        userId: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role
+      },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+
+    console.log(`✅ Connexion réussie: ${user.email}`);
+
+    return res.status(200).json({
+      message: 'Connexion réussie',
+      token,
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    console.error('❌ Erreur login:', error.message);
+    return res.status(500).json({ 
+      message: 'Erreur du serveur',
+      error: error.message 
+    });
+  }
+});
+
+// 3. VÉRIFIER LE TOKEN (Optionnel mais utile)
+app.get('/api/users/verify', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select('-password');
+    
+    if (!user) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    return res.json({
+      message: 'Token valide',
+      user: {
+        id: user._id,
+        email: user.email,
+        name: user.name,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    return res.status(500).json({ 
+      message: 'Erreur du serveur',
+      error: error.message 
+    });
+  }
+});
+
+// 4. REFRESH TOKEN
+app.post('/api/users/refresh-token', authenticateToken, (req, res) => {
+  try {
+    const newToken = jwt.sign(
+      { 
+        userId: req.user.userId,
+        email: req.user.email,
+        name: req.user.name,
+        role: req.user.role
+      },
+      JWT_SECRET,
+      { expiresIn: JWT_EXPIRES_IN }
+    );
+
+    return res.json({ 
+      message: 'Token rafraîchi',
+      token: newToken 
+    });
+  } catch (error) {
+    return res.status(500).json({ 
+      message: 'Erreur lors du rafraîchissement',
+      error: error.message 
+    });
+  }
+});
+
+// ==================== ROUTES PROTÉGÉES (CAPTEURS) ====================
+
+// GET - Récupérer toutes les données des capteurs (PROTÉGÉ)
+app.get('/api/capteurs', authenticateToken, async (req, res) => {
+  try {
+    const limit = parseInt(req.query.limit) || 100;
+    const deviceId = req.query.device_id;
+    
+    let query = {};
+    if (deviceId) {
+      query.device_id = deviceId;
+    }
+
+    const capteurs = await Capteur.find(query)
+      .sort({ timestamp_mesure: -1 })
+      .limit(limit);
+
+    return res.json({
+      message: 'Données récupérées',
+      count: capteurs.length,
+      data: capteurs
+    });
+  } catch (error) {
+    console.error('❌ Erreur récupération capteurs:', error.message);
+    return res.status(500).json({ 
+      message: 'Erreur du serveur',
+      error: error.message 
+    });
+  }
+});
+
+// GET - Récupérer les données d'un capteur spécifique (PROTÉGÉ)
+app.get('/api/capteurs/:deviceId', authenticateToken, async (req, res) => {
+  try {
+    const { deviceId } = req.params;
+    const limit = parseInt(req.query.limit) || 50;
+
+    const capteurs = await Capteur.find({ device_id: deviceId })
+      .sort({ timestamp_mesure: -1 })
+      .limit(limit);
+
+    if (capteurs.length === 0) {
+      return res.status(404).json({ 
+        message: `Aucune donnée trouvée pour le capteur ${deviceId}` 
+      });
+    }
+
+    return res.json({
+      message: 'Données récupérées',
+      device_id: deviceId,
+      count: capteurs.length,
+      data: capteurs
+    });
+  } catch (error) {
+    console.error('❌ Erreur récupération capteur:', error.message);
+    return res.status(500).json({ 
+      message: 'Erreur du serveur',
+      error: error.message 
+    });
+  }
+});
+
+// DELETE - Supprimer des données (PROTÉGÉ)
+app.delete('/api/capteurs/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    
+    const deletedCapteur = await Capteur.findByIdAndDelete(id);
+
+    if (!deletedCapteur) {
+      return res.status(404).json({ message: 'Données non trouvées' });
+    }
+
+    console.log(`🗑️  Données supprimées par ${req.user.username}: ${id}`);
+
+    return res.json({
+      message: 'Données supprimées avec succès',
+      deleted: deletedCapteur
+    });
+  } catch (error) {
+    console.error('❌ Erreur suppression:', error.message);
+    return res.status(500).json({ 
+      message: 'Erreur du serveur',
+      error: error.message 
+    });
+  }
+});
+
+// ==================== CONFIGURATION MQTT ====================
 const client = mqtt.connect({
   host: process.env.HIVE_MQ_HOST,
   port: process.env.HIVE_MQ_PORT,
@@ -316,6 +622,19 @@ process.on('SIGINT', async () => {
 });
 
 const PORT = process.env.PORT || 3000;
-console.log(`🚀 Service MQTT → MongoDB démarré sur le port ${PORT}`);
-console.log(`🔴 Mode test Node-RED activé`);
-console.log(`🗄️  Base de données: soil data`);
+
+app.listen(PORT, () => {
+  console.log(`🚀 API HTTP démarrée sur le port ${PORT}`);
+  console.log(`🔒 Authentification JWT activée`);
+  console.log(`🔴 Mode test Node-RED activé`);
+  console.log(`🗄️  Service MQTT → MongoDB actif`);
+  console.log(`🗄️  Base de données: soil data`);
+  console.log(`\n📋 Routes disponibles:`);
+  console.log(`   POST   /api/users/register       - Inscription`);
+  console.log(`   POST   /api/users/login          - Connexion`);
+  console.log(`   GET    /api/users/verify         - Vérifier token`);
+  console.log(`   POST   /api/users/refresh-token  - Rafraîchir token`);
+  console.log(`   GET    /api/capteurs             - Liste capteurs (protégé)`);
+  console.log(`   GET    /api/capteurs/:deviceId   - Capteur spécifique (protégé)`);
+  console.log(`   DELETE /api/capteurs/:id         - Supprimer données (protégé)`);
+});
