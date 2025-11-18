@@ -629,6 +629,7 @@ app.listen(PORT, () => {
   console.log(`🔴 Mode test Node-RED activé`);
   console.log(`🗄️  Service MQTT → MongoDB actif`);
   console.log(`🗄️  Base de données: soil data`);
+  
   console.log(`\n📋 Routes disponibles:`);
   console.log(`   POST   /api/users/register       - Inscription`);
   console.log(`   POST   /api/users/login          - Connexion`);

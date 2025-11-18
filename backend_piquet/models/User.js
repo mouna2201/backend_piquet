@@ -19,10 +19,10 @@ const userSchema = new mongoose.Schema({
     minlength: 6
   },
   role: {
-    type: String,
-    enum: ['admin', 'superviseur', 'farmer'],
-    default: 'farmer'
-  }
+  type: String,
+  enum: ['admin', 'superviseur', 'farmer', 'enterprise_farmer'],
+  default: 'farmer'
+}
 }, {
   timestamps: true
 });
