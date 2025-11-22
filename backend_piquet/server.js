@@ -7,6 +7,7 @@ const bcrypt = require('bcryptjs');
 const cors = require('cors');
 const Capteur = require('./models/Capteur');
 const User = require('./models/User');
+const usersRouter = require('./routes/users');
 
 // Secret JWT (à mettre dans .env)
 const JWT_SECRET = process.env.JWT_SECRET || 'votre_secret_super_securise_changez_moi';
@@ -40,6 +41,9 @@ app.use(cors({
 }));
 
 app.use(express.json());
+
+// Routes utilisateurs (listing, filtrage par rôle, etc.)
+app.use('/api', usersRouter);
 
 // ==================== MIDDLEWARE D'AUTHENTIFICATION ====================
 const authenticateToken = (req, res, next) => {
