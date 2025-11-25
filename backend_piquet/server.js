@@ -240,6 +240,77 @@ app.post('/api/users/refresh-token', authenticateToken, (req, res) => {
   }
 });
 
+// ==================== PROFIL AGRICULTEUR ====================
+
+// GET - Profil agriculteur connecté
+app.get('/api/farmer/profile', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select(
+      'parcelLocation soilType crops areaM2 hasCompletedFarmerForm',
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    return res.json({
+      parcelLocation: user.parcelLocation || '',
+      soilType: user.soilType || '',
+      crops: user.crops || [],
+      areaM2: user.areaM2 || 0,
+      hasCompletedFarmerForm: user.hasCompletedFarmerForm === true,
+    });
+  } catch (error) {
+    console.error('❌ Erreur GET /api/farmer/profile:', error.message);
+    return res.status(500).json({
+      message: 'Erreur du serveur',
+      error: error.message,
+    });
+  }
+});
+
+// PUT - Mise à jour du profil agriculteur connecté
+app.put('/api/farmer/profile', authenticateToken, async (req, res) => {
+  try {
+    const {
+      parcelLocation,
+      soilType,
+      crops,
+      areaM2,
+    } = req.body;
+
+    const user = await User.findById(req.user.userId);
+
+    if (!user) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    user.parcelLocation = parcelLocation ?? user.parcelLocation;
+    user.soilType = soilType ?? user.soilType;
+    user.crops = Array.isArray(crops) ? crops : user.crops;
+    user.areaM2 = typeof areaM2 === 'number' ? areaM2 : user.areaM2;
+
+    user.hasCompletedFarmerForm = true;
+
+    await user.save();
+
+    return res.json({
+      message: 'Profil fermier mis à jour',
+      parcelLocation: user.parcelLocation,
+      soilType: user.soilType,
+      crops: user.crops,
+      areaM2: user.areaM2,
+      hasCompletedFarmerForm: user.hasCompletedFarmerForm,
+    });
+  } catch (error) {
+    console.error('❌ Erreur PUT /api/farmer/profile:', error.message);
+    return res.status(500).json({
+      message: 'Erreur du serveur',
+      error: error.message,
+    });
+  }
+});
+
 // ==================== ROUTES CAPTEURS ====================
 
 // GET - Récupérer toutes les données des capteurs (PUBLIC POUR FLUTTER)
