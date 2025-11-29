@@ -7,6 +7,7 @@ const bcrypt = require('bcryptjs');
 const cors = require('cors');
 const Capteur = require('./models/Capteur');
 const User = require('./models/User');
+const CropHistoryRecord = require('./models/CropHistoryRecord');
 const usersRouter = require('./routes/users');
 
 // Secret JWT (à mettre dans .env)
@@ -178,6 +179,7 @@ app.post('/api/users/login', async (req, res) => {
         email: user.email,
         name: user.name,
         role: user.role,
+        hasCompletedSupervisorForm: user.hasCompletedSupervisorForm || false,
       },
     });
   } catch (error) {
@@ -236,6 +238,106 @@ app.post('/api/users/refresh-token', authenticateToken, (req, res) => {
   } catch (error) {
     return res.status(500).json({
       message: 'Erreur lors du rafraîchissement',
+      error: error.message,
+    });
+  }
+});
+
+// ==================== PROFIL SUPERVISEUR ====================
+
+// GET - Profil superviseur connecté
+app.get('/api/supervisor/profile', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findById(req.user.userId).select(
+      'supervisorParcelLocation supervisorSoilType supervisorCrops supervisorHectares hasCompletedSupervisorForm',
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    return res.json({
+      parcelLocation: user.supervisorParcelLocation || '',
+      soilType: user.supervisorSoilType || '',
+      crops: user.supervisorCrops || [],
+      hectares: user.supervisorHectares || 0,
+      hasCompletedSupervisorForm: user.hasCompletedSupervisorForm === true,
+    });
+  } catch (error) {
+    console.error('❌ Erreur GET /api/supervisor/profile:', error.message);
+    return res.status(500).json({
+      message: 'Erreur du serveur',
+      error: error.message,
+    });
+  }
+});
+
+// PUT - Mise à jour du profil superviseur connecté
+app.put('/api/supervisor/profile', authenticateToken, async (req, res) => {
+  try {
+    const {
+      parcelLocation,
+      soilType,
+      crops,
+      hectares,
+    } = req.body;
+
+    const user = await User.findById(req.user.userId);
+
+    if (!user) {
+      return res.status(404).json({ message: 'Utilisateur non trouvé' });
+    }
+
+    // Vérifier si les cultures ont changé pour enregistrer dans l'historique
+    const oldCrops = user.supervisorCrops || [];
+    const newCrops = Array.isArray(crops) ? crops : user.supervisorCrops;
+    const cropsChanged = JSON.stringify(oldCrops.sort()) !== JSON.stringify(newCrops.sort());
+
+    user.supervisorParcelLocation = parcelLocation ?? user.supervisorParcelLocation;
+    user.supervisorSoilType = soilType ?? user.supervisorSoilType;
+    user.supervisorCrops = newCrops;
+    user.supervisorHectares = typeof hectares === 'number' ? hectares : user.supervisorHectares;
+    user.hasCompletedSupervisorForm = true;
+
+    await user.save();
+
+    // Enregistrer dans l'historique si les cultures ont changé
+    if (cropsChanged && newCrops.length > 0) {
+      try {
+        // Convertir les hectares en m² (1 hectare = 10,000 m²)
+        const areaM2 = (user.supervisorHectares || 0) * 10000;
+        
+        for (const cropType of newCrops) {
+          const record = new CropHistoryRecord({
+            userId: user._id,
+            location: user.supervisorParcelLocation || 'Non spécifiée',
+            cropType: cropType,
+            area: areaM2,
+            soilType: user.supervisorSoilType || 'Non spécifié',
+            waterAmount: Math.round(areaM2 * 0.6), // Estimation: 0.6L par m²
+          });
+          await record.save();
+        }
+        console.log(`📋 Historique superviseur enregistré: ${newCrops.length} culture(s) pour l'utilisateur ${user._id}`);
+      } catch (historyError) {
+        console.error('❌ Erreur enregistrement historique superviseur:', historyError.message);
+        // Ne pas bloquer la réponse si l'historique échoue
+      }
+    }
+
+    return res.json({
+      message: 'Profil superviseur mis à jour',
+      parcelLocation: user.supervisorParcelLocation,
+      soilType: user.supervisorSoilType,
+      crops: user.supervisorCrops,
+      hectares: user.supervisorHectares,
+      hasCompletedSupervisorForm: user.hasCompletedSupervisorForm,
+      historyRecorded: cropsChanged && newCrops.length > 0,
+    });
+  } catch (error) {
+    console.error('❌ Erreur PUT /api/supervisor/profile:', error.message);
+    return res.status(500).json({
+      message: 'Erreur du serveur',
       error: error.message,
     });
   }
@@ -310,13 +412,39 @@ app.put('/api/farmer/profile', authenticateToken, async (req, res) => {
       return res.status(404).json({ message: 'Utilisateur non trouvé' });
     }
 
+    // Vérifier si les cultures ont changé pour enregistrer dans l'historique
+    const oldCrops = user.crops || [];
+    const newCrops = Array.isArray(crops) ? crops : user.crops;
+    const cropsChanged = JSON.stringify(oldCrops.sort()) !== JSON.stringify(newCrops.sort());
+
     user.parcelLocation = parcelLocation ?? user.parcelLocation;
     user.soilType = soilType ?? user.soilType;
-    user.crops = Array.isArray(crops) ? crops : user.crops;
+    user.crops = newCrops;
     user.areaM2 = typeof areaM2 === 'number' ? areaM2 : user.areaM2;
     user.hasCompletedFarmerForm = true;
 
     await user.save();
+
+    // Enregistrer dans l'historique si les cultures ont changé
+    if (cropsChanged && newCrops.length > 0) {
+      try {
+        for (const cropType of newCrops) {
+          const record = new CropHistoryRecord({
+            userId: user._id,
+            location: user.parcelLocation || 'Non spécifiée',
+            cropType: cropType,
+            area: user.areaM2 || 0,
+            soilType: user.soilType || 'Non spécifié',
+            waterAmount: Math.round((user.areaM2 || 0) * 0.6), // Estimation: 0.6L par m²
+          });
+          await record.save();
+        }
+        console.log(`📋 Historique enregistré: ${newCrops.length} culture(s) pour l'utilisateur ${user._id}`);
+      } catch (historyError) {
+        console.error('❌ Erreur enregistrement historique:', historyError.message);
+        // Ne pas bloquer la réponse si l'historique échoue
+      }
+    }
 
     return res.json({
       message: 'Profil fermier mis à jour',
@@ -325,9 +453,88 @@ app.put('/api/farmer/profile', authenticateToken, async (req, res) => {
       crops: user.crops,
       areaM2: user.areaM2,
       hasCompletedFarmerForm: user.hasCompletedFarmerForm,
+      historyRecorded: cropsChanged && newCrops.length > 0,
     });
   } catch (error) {
     console.error('❌ Erreur PUT /api/farmer/profile:', error.message);
+    return res.status(500).json({
+      message: 'Erreur du serveur',
+      error: error.message,
+    });
+  }
+});
+
+// ==================== HISTORIQUE DES CULTURES ====================
+
+// GET - Récupérer l'historique des cultures de l'utilisateur connecté
+app.get('/api/crop-history', authenticateToken, async (req, res) => {
+  console.log('🔍 Route /api/crop-history appelée');
+  try {
+    const userId = req.user.userId;
+    const limit = parseInt(req.query.limit, 10) || 50;
+
+    const history = await CropHistoryRecord.find({ userId })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+
+    // Convertir les ObjectId en string et formater les dates
+    const formattedHistory = history.map(record => ({
+      _id: record._id.toString(),
+      userId: record.userId.toString(),
+      location: record.location,
+      cropType: record.cropType,
+      area: record.area,
+      soilType: record.soilType,
+      waterAmount: record.waterAmount,
+      createdAt: record.createdAt ? new Date(record.createdAt).toISOString() : new Date().toISOString(),
+    }));
+
+    console.log(`✅ Historique récupéré: ${formattedHistory.length} enregistrements pour l'utilisateur ${userId}`);
+
+    return res.json({
+      message: 'Historique des cultures récupéré',
+      count: formattedHistory.length,
+      data: formattedHistory,
+    });
+  } catch (error) {
+    console.error('❌ Erreur GET /api/crop-history:', error.message);
+    return res.status(500).json({
+      message: 'Erreur du serveur',
+      error: error.message,
+    });
+  }
+});
+
+// POST - Enregistrer un nouvel historique de culture (appelé quand un plan est généré)
+app.post('/api/crop-history', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const { location, cropType, area, soilType, waterAmount } = req.body;
+
+    if (!location || !cropType || !area || !soilType || waterAmount === undefined) {
+      return res.status(400).json({
+        message: 'Tous les champs sont requis: location, cropType, area, soilType, waterAmount',
+      });
+    }
+
+    const record = new CropHistoryRecord({
+      userId,
+      location,
+      cropType,
+      area,
+      soilType,
+      waterAmount,
+    });
+
+    await record.save();
+
+    return res.status(201).json({
+      message: 'Historique enregistré',
+      data: record,
+    });
+  } catch (error) {
+    console.error('❌ Erreur POST /api/crop-history:', error.message);
     return res.status(500).json({
       message: 'Erreur du serveur',
       error: error.message,
@@ -697,10 +904,8 @@ app.listen(PORT, () => {
   console.log('🔒 Authentification JWT activée (utilisateurs, suppression, etc.)');
   console.log('🌐 Routes capteurs GET rendues publiques pour le front Flutter');
   console.log('🔴 Mode test Node-RED activé');
-  console.log('🗄  Service MQTT → MongoDB actif');
-  console.log('🗄  Base de données: soil data');
 
-  console.log('\n📋 Routes disponibles:');
+  console.log('\n Routes disponibles:');
   console.log('   POST   /api/users/register         - Inscription');
   console.log('   POST   /api/users/login           - Connexion');
   console.log('   GET    /api/users/verify          - Vérifier token');
@@ -712,6 +917,8 @@ app.listen(PORT, () => {
   console.log('   GET    /api/farmer/profile        - Profil fermier connecté');
   console.log('   GET    /api/farmer/profile/:id    - Profil fermier par ID (admin)');
   console.log('   PUT    /api/farmer/profile        - MAJ profil fermier connecté');
+  console.log('   POST   /api/crop-history           - Enregistrer historique (PROTÉGÉ)');
+  console.log('   GET    /api/crop-history           - Récupérer historique (PROTÉGÉ)');
   console.log('   GET    /api/capteurs              - Liste capteurs (PUBLIC)');
   console.log('   GET    /api/capteurs/:deviceId    - Capteur spécifique (PUBLIC)');
   console.log('   DELETE /api/capteurs/:id          - Supprimer données (PROTÉGÉ)');
