@@ -859,7 +859,7 @@ app.listen(PORT, () => {
   console.log('   GET    /api/farmer/profile         - Profil fermier connecté');
   console.log('   GET    /api/farmer/profile/:id     - Profil fermier par ID (admin)');
   console.log('   PUT    /api/farmer/profile         - MAJ profil fermier connecté');
-  console.log('   GET    /api/supervisor/profile     - Profil superviseur connecté');
+console.log('   GET    /api/supervisor/profile     - Profil superviseur connecté');
   console.log('   PUT    /api/supervisor/profile     - MAJ profil superviseur');
   console.log('   GET    /api/crop-history           - Historique des cultures (PROTÉGÉ)');
   console.log('   POST   /api/crop-history           - Enregistrer historique (PROTÉGÉ)');
