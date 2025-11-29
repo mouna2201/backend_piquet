@@ -288,14 +288,42 @@ app.put('/api/supervisor/profile', authenticateToken, async (req, res) => {
       return res.status(404).json({ message: 'Utilisateur non trouvé' });
     }
 
+    // Vérifier si les cultures ont changé pour enregistrer dans l'historique
+    const oldCrops = user.supervisorCrops || [];
+    const newCrops = Array.isArray(crops) ? crops : user.supervisorCrops;
+    const cropsChanged = JSON.stringify(oldCrops.sort()) !== JSON.stringify(newCrops.sort());
+
     user.supervisorParcelLocation = parcelLocation ?? user.supervisorParcelLocation;
     user.supervisorSoilType = soilType ?? user.supervisorSoilType;
-    user.supervisorCrops = Array.isArray(crops) ? crops : user.supervisorCrops;
+    user.supervisorCrops = newCrops;
     user.supervisorHectares = typeof hectares === 'number' ? hectares : user.supervisorHectares;
-
     user.hasCompletedSupervisorForm = true;
 
     await user.save();
+
+    // Enregistrer dans l'historique si les cultures ont changé
+    if (cropsChanged && newCrops.length > 0) {
+      try {
+        // Convertir les hectares en m² (1 hectare = 10,000 m²)
+        const areaM2 = (user.supervisorHectares || 0) * 10000;
+        
+        for (const cropType of newCrops) {
+          const record = new CropHistoryRecord({
+            userId: user._id,
+            location: user.supervisorParcelLocation || 'Non spécifiée',
+            cropType: cropType,
+            area: areaM2,
+            soilType: user.supervisorSoilType || 'Non spécifié',
+            waterAmount: Math.round(areaM2 * 0.6), // Estimation: 0.6L par m²
+          });
+          await record.save();
+        }
+        console.log(`📋 Historique superviseur enregistré: ${newCrops.length} culture(s) pour l'utilisateur ${user._id}`);
+      } catch (historyError) {
+        console.error('❌ Erreur enregistrement historique superviseur:', historyError.message);
+        // Ne pas bloquer la réponse si l'historique échoue
+      }
+    }
 
     return res.json({
       message: 'Profil superviseur mis à jour',
@@ -304,6 +332,7 @@ app.put('/api/supervisor/profile', authenticateToken, async (req, res) => {
       crops: user.supervisorCrops,
       hectares: user.supervisorHectares,
       hasCompletedSupervisorForm: user.hasCompletedSupervisorForm,
+      historyRecorded: cropsChanged && newCrops.length > 0,
     });
   } catch (error) {
     console.error('❌ Erreur PUT /api/supervisor/profile:', error.message);
@@ -383,13 +412,39 @@ app.put('/api/farmer/profile', authenticateToken, async (req, res) => {
       return res.status(404).json({ message: 'Utilisateur non trouvé' });
     }
 
+    // Vérifier si les cultures ont changé pour enregistrer dans l'historique
+    const oldCrops = user.crops || [];
+    const newCrops = Array.isArray(crops) ? crops : user.crops;
+    const cropsChanged = JSON.stringify(oldCrops.sort()) !== JSON.stringify(newCrops.sort());
+
     user.parcelLocation = parcelLocation ?? user.parcelLocation;
     user.soilType = soilType ?? user.soilType;
-    user.crops = Array.isArray(crops) ? crops : user.crops;
+    user.crops = newCrops;
     user.areaM2 = typeof areaM2 === 'number' ? areaM2 : user.areaM2;
     user.hasCompletedFarmerForm = true;
 
     await user.save();
+
+    // Enregistrer dans l'historique si les cultures ont changé
+    if (cropsChanged && newCrops.length > 0) {
+      try {
+        for (const cropType of newCrops) {
+          const record = new CropHistoryRecord({
+            userId: user._id,
+            location: user.parcelLocation || 'Non spécifiée',
+            cropType: cropType,
+            area: user.areaM2 || 0,
+            soilType: user.soilType || 'Non spécifié',
+            waterAmount: Math.round((user.areaM2 || 0) * 0.6), // Estimation: 0.6L par m²
+          });
+          await record.save();
+        }
+        console.log(`📋 Historique enregistré: ${newCrops.length} culture(s) pour l'utilisateur ${user._id}`);
+      } catch (historyError) {
+        console.error('❌ Erreur enregistrement historique:', historyError.message);
+        // Ne pas bloquer la réponse si l'historique échoue
+      }
+    }
 
     return res.json({
       message: 'Profil fermier mis à jour',
@@ -398,6 +453,7 @@ app.put('/api/farmer/profile', authenticateToken, async (req, res) => {
       crops: user.crops,
       areaM2: user.areaM2,
       hasCompletedFarmerForm: user.hasCompletedFarmerForm,
+      historyRecorded: cropsChanged && newCrops.length > 0,
     });
   } catch (error) {
     console.error('❌ Erreur PUT /api/farmer/profile:', error.message);
