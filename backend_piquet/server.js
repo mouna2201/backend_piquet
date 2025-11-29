@@ -13,7 +13,7 @@ const usersRouter = require('./routes/users');
 const JWT_SECRET = process.env.JWT_SECRET || 'votre_secret_super_securise_changez_moi';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '24h';
 
-// Connexion MongoDB avec meilleure gestion d'erreurs
+// Connexion MongoDB
 const connectDB = async () => {
   try {
     await mongoose.connect(process.env.MONGODB_URI, {
@@ -27,18 +27,19 @@ const connectDB = async () => {
     process.exit(1);
   }
 };
-
 connectDB();
 
-// Initialisation de l'application Express
+// Initialisation Express
 const app = express();
 
-// Configuration CORS pour Flutter
-app.use(cors({
-  origin: '*', // En production, remplacez par votre domaine Flutter
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-}));
+// CORS
+app.use(
+  cors({
+    origin: '*',
+    methods: ['GET', 'POST', 'PUT', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'Authorization'],
+  }),
+);
 
 app.use(express.json());
 
@@ -48,7 +49,7 @@ app.use('/api', usersRouter);
 // ==================== MIDDLEWARE D'AUTHENTIFICATION ====================
 const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1]; // Format: "Bearer TOKEN"
+  const token = authHeader && authHeader.split(' ')[1]; // "Bearer TOKEN"
 
   if (!token) {
     return res.status(401).json({ message: 'Token manquant. Accès refusé.' });
@@ -69,7 +70,7 @@ const authenticateToken = (req, res, next) => {
 
 // ==================== ROUTES D'AUTHENTIFICATION ====================
 
-// 1. INSCRIPTION (Register)
+// 1. INSCRIPTION
 app.post('/api/users/register', async (req, res) => {
   try {
     const { name, email, password, role } = req.body;
@@ -78,19 +79,13 @@ app.post('/api/users/register', async (req, res) => {
       return res.status(400).json({ message: 'Email et password sont requis' });
     }
 
-    // Vérifier si l'utilisateur existe déjà
     const existingUser = await User.findOne({ email });
-
     if (existingUser) {
-      return res.status(400).json({
-        message: 'Email déjà utilisé',
-      });
+      return res.status(400).json({ message: 'Email déjà utilisé' });
     }
 
-    // Hasher le mot de passe
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Créer l'utilisateur
     const newUser = new User({
       name,
       email,
@@ -100,7 +95,6 @@ app.post('/api/users/register', async (req, res) => {
 
     await newUser.save();
 
-    // Générer le token JWT
     const token = jwt.sign(
       {
         userId: newUser._id,
@@ -132,30 +126,37 @@ app.post('/api/users/register', async (req, res) => {
   }
 });
 
-// 2. CONNEXION (Login)
+// 2. CONNEXION
 app.post('/api/users/login', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, username, password } = req.body;
 
-    if (!email || !password) {
-      return res.status(400).json({ message: 'Email et password sont requis' });
+    // il faut au moins password + (email OU username)
+    if ((!email && !username) || !password) {
+      return res
+        .status(400)
+        .json({ message: 'Email ou nom utilisateur et password sont requis' });
     }
 
-    // Trouver l'utilisateur par email
-    const user = await User.findOne({ email });
+    // On cherche par email si fourni, sinon par "name" (nom d'utilisateur)
+    let query;
+    if (email) {
+      query = { email };
+    } else {
+      // si ton schéma a un champ "username", remplace par { username }
+      query = { name: username };
+    }
 
+    const user = await User.findOne(query);
     if (!user) {
       return res.status(401).json({ message: 'Identifiants invalides' });
     }
 
-    // Vérifier le mot de passe hashé
     const isPasswordValid = await bcrypt.compare(password, user.password);
-
     if (!isPasswordValid) {
       return res.status(401).json({ message: 'Identifiants invalides' });
     }
 
-    // Générer le token JWT
     const token = jwt.sign(
       {
         userId: user._id,
@@ -167,7 +168,7 @@ app.post('/api/users/login', async (req, res) => {
       { expiresIn: JWT_EXPIRES_IN },
     );
 
-    console.log(`✅ Connexion réussie: ${user.email}`);
+    console.log(`✅ Connexion réussie: ${user.email || user.name}`);
 
     return res.status(200).json({
       message: 'Connexion réussie',
@@ -242,7 +243,7 @@ app.post('/api/users/refresh-token', authenticateToken, (req, res) => {
 
 // ==================== PROFIL AGRICULTEUR ====================
 
-// GET - Profil agriculteur connecté
+// GET - Profil agriculteur connecté (superviseur)
 app.get('/api/farmer/profile', authenticateToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.userId).select(
@@ -269,15 +270,39 @@ app.get('/api/farmer/profile', authenticateToken, async (req, res) => {
   }
 });
 
+// *NOUVELLE ROUTE* - Profil agriculteur par ID (pour admin)
+app.get('/api/farmer/profile/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const user = await User.findById(id).select(
+      'parcelLocation soilType crops areaM2 hasCompletedFarmerForm',
+    );
+
+    if (!user) {
+      return res.status(404).json({ message: 'Fermier non trouvé' });
+    }
+
+    return res.json({
+      parcelLocation: user.parcelLocation || '',
+      soilType: user.soilType || '',
+      crops: user.crops || [],
+      areaM2: user.areaM2 || 0,
+      hasCompletedFarmerForm: user.hasCompletedFarmerForm === true,
+    });
+  } catch (error) {
+    console.error('❌ Erreur GET /api/farmer/profile/:id:', error.message);
+    return res.status(500).json({
+      message: 'Erreur du serveur',
+      error: error.message,
+    });
+  }
+});
+
 // PUT - Mise à jour du profil agriculteur connecté
 app.put('/api/farmer/profile', authenticateToken, async (req, res) => {
   try {
-    const {
-      parcelLocation,
-      soilType,
-      crops,
-      areaM2,
-    } = req.body;
+    const { parcelLocation, soilType, crops, areaM2 } = req.body;
 
     const user = await User.findById(req.user.userId);
 
@@ -289,7 +314,6 @@ app.put('/api/farmer/profile', authenticateToken, async (req, res) => {
     user.soilType = soilType ?? user.soilType;
     user.crops = Array.isArray(crops) ? crops : user.crops;
     user.areaM2 = typeof areaM2 === 'number' ? areaM2 : user.areaM2;
-
     user.hasCompletedFarmerForm = true;
 
     await user.save();
@@ -313,7 +337,6 @@ app.put('/api/farmer/profile', authenticateToken, async (req, res) => {
 
 // ==================== ROUTES CAPTEURS ====================
 
-// GET - Récupérer toutes les données des capteurs (PUBLIC POUR FLUTTER)
 app.get('/api/capteurs', async (req, res) => {
   try {
     const limit = parseInt(req.query.limit, 10) || 100;
@@ -342,7 +365,6 @@ app.get('/api/capteurs', async (req, res) => {
   }
 });
 
-// GET - Récupérer les données d'un capteur spécifique (PUBLIC POUR FLUTTER)
 app.get('/api/capteurs/:deviceId', async (req, res) => {
   try {
     const { deviceId } = req.params;
@@ -373,7 +395,6 @@ app.get('/api/capteurs/:deviceId', async (req, res) => {
   }
 });
 
-// DELETE - Supprimer des données (toujours PROTÉGÉ)
 app.delete('/api/capteurs/:id', authenticateToken, async (req, res) => {
   try {
     const { id } = req.params;
@@ -399,7 +420,7 @@ app.delete('/api/capteurs/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// ==================== CONFIGURATION MQTT ====================
+// ==================== MQTT ====================
 const client = mqtt.connect({
   host: process.env.HIVE_MQ_HOST,
   port: process.env.HIVE_MQ_PORT,
@@ -413,9 +434,7 @@ const client = mqtt.connect({
 client.on('connect', () => {
   console.log('✅ Connecté à HiveMQ Cloud');
 
-  const topics = [
-    'farm/soil1',
-  ];
+  const topics = ['farm/soil1'];
 
   topics.forEach((topic) => {
     client.subscribe(topic, { qos: 1 }, (err) => {
@@ -426,7 +445,6 @@ client.on('connect', () => {
   });
 });
 
-// FONCTION AMÉLIORÉE POUR GÉRER DIFFÉRENTS FORMATS
 client.on('message', async (topic, message) => {
   const messageStr = message.toString();
   console.log(`\n📨 Message reçu [${topic}]: ${messageStr}`);
@@ -434,17 +452,14 @@ client.on('message', async (topic, message) => {
   try {
     let data;
 
-    // Détection si c'est un test Node-RED
     if (isNodeRedTest(topic, messageStr)) {
       await handleNodeRedTest(topic, messageStr);
       return;
     }
 
-    // Essayer de parser comme JSON d'abord
     try {
       data = JSON.parse(messageStr);
     } catch (jsonError) {
-      // Si échec JSON, traiter comme texte simple
       data = parseSimpleMessage(messageStr, topic);
     }
 
@@ -454,21 +469,18 @@ client.on('message', async (topic, message) => {
   }
 });
 
-// FONCTION POUR DÉTECTER LES TESTS NODE-RED
 function isNodeRedTest(topic, message) {
-  // Détection par topic
   if (topic.includes('node-red') || topic.includes('test') || topic.includes('simulation')) {
     return true;
   }
 
-  // Détection par contenu du message
   const messageStr = message.toString().toLowerCase();
   if (
-    messageStr.includes('test')
-    || messageStr.includes('simulation')
-    || messageStr.includes('mock')
-    || messageStr.includes('fake')
-    || /^\d+$/.test(messageStr.trim()) // uniquement chiffres
+    messageStr.includes('test') ||
+    messageStr.includes('simulation') ||
+    messageStr.includes('mock') ||
+    messageStr.includes('fake') ||
+    /^\d+$/.test(messageStr.trim())
   ) {
     return true;
   }
@@ -476,14 +488,12 @@ function isNodeRedTest(topic, message) {
   return false;
 }
 
-// FONCTION POUR TRAITER LES TESTS NODE-RED
 async function handleNodeRedTest(topic, message) {
   console.log('🔴 DÉTECTION TEST NODE-RED');
 
   const messageStr = message.toString();
   const deviceId = extractDeviceId(topic);
 
-  // Préparer les données de test
   const testData = {
     device_id: deviceId || 'node-red-test',
     source: 'node-red',
@@ -493,25 +503,22 @@ async function handleNodeRedTest(topic, message) {
     valeur_test: null,
   };
 
-  // Essayer d'extraire une valeur numérique
   const numberMatch = messageStr.match(/(\d+(?:\.\d+)?)/);
   if (numberMatch) {
     const numericValue = parseFloat(numberMatch[1]);
     testData.valeur_test = numericValue;
 
-    // Deviner le type de données basé sur la valeur
     if (numericValue >= -50 && numericValue <= 100) {
       testData.temperature = numericValue;
-      console.log(`🌡  Test température simulée: ${numericValue}°C`);
+      console.log(`🌡  Température simulée: ${numericValue}°C`);
     } else if (numericValue >= 0 && numericValue <= 100) {
       testData.humidite = numericValue;
-      console.log(`💧 Test humidité simulée: ${numericValue}%`);
+      console.log(`💧 Humidité simulée: ${numericValue}%`);
     } else {
       console.log(`🔢 Valeur numérique de test: ${numericValue}`);
     }
   }
 
-  // Sauvegarder en base de données avec un flag de simulation
   try {
     const documentTest = new Capteur({
       device_id: testData.device_id,
@@ -529,14 +536,12 @@ async function handleNodeRedTest(topic, message) {
     console.log(`   🆔 ID: ${savedData._id}`);
     console.log('   📍 Source: Node-RED (Simulation)');
 
-    // Publier une confirmation
     publishTestConfirmation(testData.device_id, savedData._id, testData.valeur_test);
   } catch (error) {
     console.error('❌ Erreur sauvegarde test:', error.message);
   }
 }
 
-// FONCTION POUR PUBLIER UNE CONFIRMATION DE TEST
 function publishTestConfirmation(deviceId, mongoId, value) {
   const testValue = value !== null && value !== undefined ? value : 'unknown';
 
@@ -558,7 +563,6 @@ function publishTestConfirmation(deviceId, mongoId, value) {
   });
 }
 
-// FONCTION POUR PARSER LES MESSAGES SIMPLES COMME "24°c"
 function parseSimpleMessage(message, topic) {
   console.log(`🔧 Parsing message simple: "${message}"`);
 
@@ -568,28 +572,26 @@ function parseSimpleMessage(message, topic) {
     is_simulation: false,
   };
 
-  // Détection température (ex: "24°c", "24°C", "24 c")
   const tempMatch = message.match(/(\d+(?:\.\d+)?)\s*°?\s*[cC]/);
   if (tempMatch) {
     result.temperature = parseFloat(tempMatch[1]);
     console.log(`🌡  Température détectée: ${result.temperature}°C`);
   }
 
-  // Détection humidité
   const humidityMatch = message.match(/(\d+(?:\.\d+)?)\s*%?/);
   if (humidityMatch && !tempMatch) {
     result.humidite = parseFloat(humidityMatch[1]);
     console.log(`💧 Humidité détectée: ${result.humidite}%`);
   }
 
-  // Détection humidité sol
-  const soilMoistureMatch = message.toLowerCase().match(/(\d+(?:\.\d+)?)\s*%.soil|soil.(\d+(?:\.\d+)?)\s*%/);
+  const soilMoistureMatch = message
+    .toLowerCase()
+    .match(/(\d+(?:\.\d+)?)\s*%.soil|soil.(\d+(?:\.\d+)?)\s*%/);
   if (soilMoistureMatch) {
     result.humidite_sol = parseFloat(soilMoistureMatch[1] || soilMoistureMatch[2]);
     console.log(`🌱 Humidité sol détectée: ${result.humidite_sol}%`);
   }
 
-  // Si aucun pattern reconnu, stocker comme raw
   if (!result.temperature && !result.humidite && !result.humidite_sol) {
     result.raw_value = message;
     console.log(`📝 Valeur brute stockée: ${message}`);
@@ -598,12 +600,11 @@ function parseSimpleMessage(message, topic) {
   return result;
 }
 
-// EXTRACTION DEVICE ID
 function extractDeviceId(topic) {
   const parts = topic.split('/');
 
   if (topic.startsWith('farm/')) {
-    return parts[1]; // "soil1" depuis "farm/soil1"
+    return parts[1];
   }
 
   if (topic.startsWith('soil/')) {
@@ -622,7 +623,6 @@ function extractDeviceId(topic) {
   return parts[parts.length - 1];
 }
 
-// TRAITEMENT ET SAUVEGARDE
 async function processAndSaveData(topic, data) {
   try {
     const deviceId = data.device_id || extractDeviceId(topic);
@@ -631,7 +631,6 @@ async function processAndSaveData(topic, data) {
       throw new Error('Device ID non trouvé');
     }
 
-    // Préparation du document
     const documentCapteur = new Capteur({
       device_id: deviceId,
       humidite: data.humidite || data.humidity,
@@ -648,22 +647,21 @@ async function processAndSaveData(topic, data) {
       raw_data: data,
     });
 
-    // Validation avant sauvegarde
     if (
-      documentCapteur.temperature === undefined
-      && documentCapteur.humidite === undefined
-      && documentCapteur.humidite_sol === undefined
+      documentCapteur.temperature === undefined &&
+      documentCapteur.humidite === undefined &&
+      documentCapteur.humidite_sol === undefined
     ) {
       console.log('⚠  Aucune donnée de capteur valide, sauvegarde raw_data seulement');
     }
 
-    // Sauvegarde
     const savedData = await documentCapteur.save();
 
     const sourceType = documentCapteur.is_simulation ? 'SIMULATION' : 'CAPTEUR RÉEL';
     console.log(`💾 Données sauvegardées dans "soil data" - Device: ${deviceId} (${sourceType})`);
     if (savedData.temperature) console.log(`   🌡  Température air: ${savedData.temperature}°C`);
-    if (savedData.temperature_sol) console.log(`   🌡  Température sol: ${savedData.temperature_sol}°C`);
+    if (savedData.temperature_sol)
+      console.log(`   🌡  Température sol: ${savedData.temperature_sol}°C`);
     if (savedData.humidite) console.log(`   💧 Humidité air: ${savedData.humidite}%`);
     if (savedData.humidite_sol) console.log(`   🌱 Humidité sol: ${savedData.humidite_sol}%`);
     console.log(`   🆔 ID: ${savedData._id}`);
@@ -673,7 +671,6 @@ async function processAndSaveData(topic, data) {
   }
 }
 
-// Gestion des erreurs
 client.on('error', (err) => {
   console.error('❌ Erreur MQTT:', err);
 });
@@ -686,7 +683,6 @@ mongoose.connection.on('connected', () => {
   console.log('🗄  Base de données: soil data');
 });
 
-// Arrêt propre
 process.on('SIGINT', async () => {
   console.log('\n🛑 Arrêt du service...');
   client.end();
@@ -705,11 +701,14 @@ app.listen(PORT, () => {
   console.log('🗄  Base de données: soil data');
 
   console.log('\n📋 Routes disponibles:');
-  console.log('   POST   /api/users/register        - Inscription');
-  console.log('   POST   /api/users/login           - Connexion');
-  console.log('   GET    /api/users/verify          - Vérifier token');
-  console.log('   POST   /api/users/refresh-token   - Rafraîchir token');
-  console.log('   GET    /api/capteurs              - Liste capteurs (PUBLIC)');
-  console.log('   GET    /api/capteurs/:deviceId    - Capteur spécifique (PUBLIC)');
-  console.log('   DELETE /api/capteurs/:id          - Supprimer données (PROTÉGÉ)');
+  console.log('   POST   /api/users/register         - Inscription');
+  console.log('   POST   /api/users/login            - Connexion');
+  console.log('   GET    /api/users/verify           - Vérifier token');
+  console.log('   POST   /api/users/refresh-token    - Rafraîchir token');
+  console.log('   GET    /api/farmer/profile         - Profil fermier connecté');
+  console.log('   GET    /api/farmer/profile/:id     - Profil fermier par ID (admin)');
+  console.log('   PUT    /api/farmer/profile         - MAJ profil fermier connecté');
+  console.log('   GET    /api/capteurs               - Liste capteurs (PUBLIC)');
+  console.log('   GET    /api/capteurs/:deviceId     - Capteur spécifique (PUBLIC)');
+  console.log('   DELETE /api/capteurs/:id           - Supprimer données (PROTÉGÉ)');
 });
